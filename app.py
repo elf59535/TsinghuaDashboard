@@ -182,36 +182,32 @@ def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
     st.markdown(f"### {title}")
     st.markdown(f"**计分规则：{label} × {unit} 分**")
     
-    # Prepare data for editor
-    df_template = pd.DataFrame({
-        "小组": st.session_state.data["小组"].tolist(),
-        label: [0] * len(st.session_state.data),
-        "备注": [default_reason] * len(st.session_state.data)
-    })
-    
-    column_config = {
-        "小组": st.column_config.TextColumn("小组", disabled=True),
-        label: st.column_config.NumberColumn(label, min_value=0, step=1),
-        "备注": st.column_config.TextColumn("备注")
-    }
-    
     # Use st.form to prevent rerun on every edit
     with st.form(key=f"form_{title}"):
-        edited_df = st.data_editor(
-            df_template,
-            column_config=column_config,
-            hide_index=True,
-            use_container_width=True,
-            key=f"editor_{title}"
-        )
-        submit_btn = st.form_submit_button("确认提交")
+        st.caption("请直接在下方输入各组数量，数值为0表示无变动")
+        
+        # Create input fields for each group
+        input_data = []
+        for group in st.session_state.data["小组"]:
+            c1, c2, c3 = st.columns([2, 2, 4])
+            with c1:
+                st.markdown(f"**{group}**")
+            with c2:
+                val = st.number_input(f"{label}", min_value=0, step=1, key=f"num_{title}_{group}", label_visibility="collapsed")
+            with c3:
+                reason = st.text_input(f"备注", value=default_reason, key=f"reason_{title}_{group}", label_visibility="collapsed")
+            
+            input_data.append({"小组": group, label: val, "备注": reason})
+            
+        st.markdown("---")
+        submit_btn = st.form_submit_button("确认提交", type="primary")
     
     if submit_btn:
         count_updates = 0
         updates_info = [] 
         
         # Calculate changes in memory first
-        for _, row in edited_df.iterrows():
+        for row in input_data:
             count = row[label]
             if count > 0:
                 group = row["小组"]
