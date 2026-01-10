@@ -67,7 +67,6 @@ def load_data():
     df = conn.query("SELECT * FROM groups_data;", ttl=0)
     
     if df.empty:
-        global groups
         groups = ["一组", "二组", "三组", "四组", "五组", "六组", "七组"]
         df = pd.DataFrame({ 
             "小组": groups, 
@@ -105,8 +104,6 @@ def load_data():
             "score_vitality": "无体育不清华(活力)",
             "total_leave_hours": "总请假时长"
         })
-        global groups
-        groups = df["小组"].tolist()
 
     # Load Logs
     logs_df = conn.query("SELECT content FROM logs ORDER BY id DESC;", ttl=0)
@@ -204,7 +201,7 @@ if 'data' not in st.session_state:
     st.session_state.data, st.session_state.logs, st.session_state.approvals, st.session_state.leave_records = load_data()
 
 # 默认小组密码 (实际应用应从数据库读取)
-GROUP_PASSWORDS = {g: "123" for g in groups}
+GROUP_PASSWORDS = {g: "123" for g in st.session_state.data["小组"]}
 
 @st.dialog("批量快速评分", width="large")
 def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
