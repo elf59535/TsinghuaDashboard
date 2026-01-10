@@ -33,10 +33,12 @@ if 'data' not in st.session_state:
         "自强不息(准时)": [25] * 7, 
         "行胜于言(专注)": [25] * 7, 
         "厚德载物(互助)": [25] * 7, 
-        "无体育不清华(活力)": [25] * 7 
+        "无体育不清华(活力)": [25] * 7,
+        "总请假时长": [0.0] * 7
     }) 
     st.session_state.logs = [] 
     st.session_state.approvals = [] # 待审核队列
+    st.session_state.leave_records = [] # 请假记录: {group, name, hours}
 
 # 默认小组密码 (实际应用应从数据库读取)
 GROUP_PASSWORDS = {g: "123" for g in st.session_state.data["小组"]}
@@ -129,6 +131,33 @@ def leader_quick_submit_dialog(group_name, dimension, unit, label, default_reaso
         st.success("✅ 申请已提交！请通知管理员审核。")
         st.rerun()
 
+@st.dialog("提交请假申请")
+def leave_submit_dialog(group_name):
+    st.markdown(f"### 📝 {group_name} - 请假登记")
+    st.info("总学时：42小时。个人请假超过20% (8.4小时) 将不予结业。")
+    
+    name = st.text_input("学员姓名")
+    hours = st.number_input("请假时长 (小时)", min_value=0.5, step=0.5)
+    reason = st.text_input("请假原因", placeholder="例如：公司紧急会议")
+    
+    if st.button("提交请假"):
+        if not name:
+            st.error("请输入姓名")
+            return
+            
+        # Add to approvals
+        st.session_state.approvals.append({
+            "timestamp": datetime.now().strftime('%H:%M'),
+            "type": "leave",
+            "group": group_name,
+            "name": name,
+            "hours": hours,
+            "reason": reason,
+            "status": "pending"
+        })
+        st.success("✅ 请假申请已提交！请通知管理员审核。")
+        st.rerun()
+
 # --- 侧边栏：角色控制台 --- 
 with st.sidebar: 
     st.header("⚙️ 班级控制台") 
@@ -148,22 +177,49 @@ with st.sidebar:
                     # Iterate copy to modify list safely
                     for i, item in enumerate(list(st.session_state.approvals)):
                         st.markdown(f"**{item['group']}**")
-                        st.caption(f"{item['dimension']} | {item['change']:+d}分 | {item['timestamp']}")
-                        st.text(f"原因: {item['reason']}")
                         
-                        c1, c2 = st.columns(2)
-                        if c1.button("✅ 通过", key=f"app_{i}"):
-                            # Apply change
-                            idx = st.session_state.data[st.session_state.data["小组"] == item['group']].index[0]
-                            st.session_state.data.loc[idx, item['dimension']] += item['change']
-                            st.session_state.data.loc[idx, "总分"] += item['change']
-                            st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | [审核通过] {item['group']} {item['dimension']} {item['change']:+d} | 原因: {item['reason']}")
-                            st.session_state.approvals.pop(i)
-                            st.rerun()
+                        if item.get("type") == "leave":
+                            st.warning(f"📄 请假申请 | {item['name']} | {item['hours']}小时")
+                            st.text(f"原因: {item['reason']}")
                             
-                        if c2.button("❌ 驳回", key=f"rej_{i}"):
-                            st.session_state.approvals.pop(i)
-                            st.rerun()
+                            c1, c2 = st.columns(2)
+                            if c1.button("✅ 批准", key=f"app_{i}"):
+                                # Record leave
+                                st.session_state.leave_records.append({
+                                    "group": item['group'],
+                                    "name": item['name'],
+                                    "hours": item['hours']
+                                })
+                                # Update group total leave hours
+                                idx = st.session_state.data[st.session_state.data["小组"] == item['group']].index[0]
+                                st.session_state.data.loc[idx, "总请假时长"] += item['hours']
+                                
+                                st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | [请假批准] {item['group']}-{item['name']} 请假 {item['hours']}小时")
+                                st.session_state.approvals.pop(i)
+                                st.rerun()
+                                
+                            if c2.button("❌ 驳回", key=f"rej_{i}"):
+                                st.session_state.approvals.pop(i)
+                                st.rerun()
+                                
+                        else:
+                            # Normal score approval
+                            st.caption(f"{item['dimension']} | {item['change']:+d}分 | {item['timestamp']}")
+                            st.text(f"原因: {item['reason']}")
+                            
+                            c1, c2 = st.columns(2)
+                            if c1.button("✅ 通过", key=f"app_{i}"):
+                                # Apply change
+                                idx = st.session_state.data[st.session_state.data["小组"] == item['group']].index[0]
+                                st.session_state.data.loc[idx, item['dimension']] += item['change']
+                                st.session_state.data.loc[idx, "总分"] += item['change']
+                                st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | [审核通过] {item['group']} {item['dimension']} {item['change']:+d} | 原因: {item['reason']}")
+                                st.session_state.approvals.pop(i)
+                                st.rerun()
+                                
+                            if c2.button("❌ 驳回", key=f"rej_{i}"):
+                                st.session_state.approvals.pop(i)
+                                st.rerun()
                         st.divider()
             else:
                 st.success("✨ 所有申请已处理完毕")
@@ -247,6 +303,8 @@ with st.sidebar:
             with c2:
                 if st.button("🤝 登记互助", use_container_width=True):
                     leader_quick_submit_dialog(selected_group, "厚德载物(互助)", 5, "表扬人次", "课后整洁/助人")
+                if st.button("📄 登记请假", use_container_width=True):
+                    leave_submit_dialog(selected_group)
                 
             st.info("💡 提交后需等待管理员审核生效")
         elif gp_pw:
@@ -271,6 +329,11 @@ for i, row in st.session_state.data.iterrows():
         progress = min(row['总分'] / 500, 1.0) # 假设500分为终点 
         st.progress(progress)
         st.caption(f"当前积分: {int(row['总分'])} 分")
+        
+        # Display leave info
+        leave_hours = row['总请假时长']
+        if leave_hours > 0:
+            st.info(f"📅 请假累计: {leave_hours}h")
 
 st.divider() 
 
@@ -296,11 +359,29 @@ with tab2:
 st.divider() 
 
 with st.expander("⚠️ 挂科预警 (黑榜)", expanded=True):
+    # 1. Low Score Warning
     low_performers = st.session_state.data[st.session_state.data["总分"] < 80]["小组"].tolist() 
     if low_performers: 
         for group in low_performers: 
             st.error(f"🚨 {group}：学分亮红灯，请及时充能！") 
-    else: 
+            
+    # 2. Leave Warning (>20% = 8.4h)
+    MAX_LEAVE_HOURS = 8.4
+    has_leave_warning = False
+    
+    # Check individual records
+    # Aggregate leave by person
+    person_leaves = {}
+    for record in st.session_state.leave_records:
+        key = f"{record['group']}-{record['name']}"
+        person_leaves[key] = person_leaves.get(key, 0) + record['hours']
+        
+    for key, total_hours in person_leaves.items():
+        if total_hours > MAX_LEAVE_HOURS:
+            st.error(f"🚫 不予结业：{key} (请假 {total_hours}h > 8.4h)")
+            has_leave_warning = True
+            
+    if not low_performers and not has_leave_warning: 
         st.success("🎉 暂无小组挂科，全员优异！") 
 
 with st.expander("📜 班级能量日志", expanded=False):
