@@ -15,10 +15,7 @@ os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
 
 # --- 数据持久化 (GitHub) ---
 # GitHub File Paths (in repo)
-REPO_DATA_PATH = "data/data.csv"
-REPO_LOGS_PATH = "data/logs.json"
-REPO_APPROVALS_PATH = "data/approvals.json"
-REPO_LEAVE_PATH = "data/leave_records.json"
+REPO_DB_PATH = "data/database.json"
 
 def get_github_repo():
     """Get GitHub repository object"""
@@ -58,10 +55,15 @@ def load_data():
     if not repo:
         raise Exception("Could not connect to GitHub")
 
-    # Load Groups Data
-    csv_content, _ = read_file_from_github(repo, REPO_DATA_PATH)
-    if csv_content:
-        df = pd.read_csv(BytesIO(csv_content.encode('utf-8')))
+    # Load All Data from Single JSON
+    content, _ = read_file_from_github(repo, REPO_DB_PATH)
+    
+    if content:
+        db = json.loads(content)
+        df = pd.DataFrame(db.get("groups", []))
+        logs = db.get("logs", [])
+        approvals = db.get("approvals", [])
+        leave_records = db.get("leave_records", [])
     else:
         # Initialize if not exists
         groups = ["一组", "二组", "三组", "四组", "五组", "六组", "七组"]
@@ -74,47 +76,49 @@ def load_data():
             "无体育不清华(活力)": [25.0] * 7,
             "总请假时长": [0.0] * 7
         })
+        logs = []
+        approvals = []
+        leave_records = []
+        
         # Save initial to GitHub
-        write_file_to_github(repo, REPO_DATA_PATH, df.to_csv(index=False), "Init data.csv")
-
-    # Load Logs
-    logs_content, _ = read_file_from_github(repo, REPO_LOGS_PATH)
-    logs = json.loads(logs_content) if logs_content else []
-
-    # Load Approvals
-    app_content, _ = read_file_from_github(repo, REPO_APPROVALS_PATH)
-    approvals = json.loads(app_content) if app_content else []
-
-    # Load Leave Records
-    leave_content, _ = read_file_from_github(repo, REPO_LEAVE_PATH)
-    leave_records = json.loads(leave_content) if leave_content else []
+        initial_db = {
+            "groups": df.to_dict(orient="records"),
+            "logs": logs,
+            "approvals": approvals,
+            "leave_records": leave_records
+        }
+        write_file_to_github(repo, REPO_DB_PATH, json.dumps(initial_db, ensure_ascii=False, indent=2), "Init database.json")
 
     return df, logs, approvals, leave_records
 
 def save_all_data(reason="Update data"):
     """Save all session state data to GitHub"""
-    repo = get_github_repo()
-    if not repo:
-        return
+    with st.spinner("正在同步数据到云端，请稍候..."):
+        repo = get_github_repo()
+        if not repo:
+            return False
 
-    # 1. Save CSV
-    csv_content, sha_csv = read_file_from_github(repo, REPO_DATA_PATH)
-    write_file_to_github(repo, REPO_DATA_PATH, st.session_state.data.to_csv(index=False), f"Update data: {reason}", sha_csv)
-
-    # 2. Save Logs
-    logs_json = json.dumps(st.session_state.logs, ensure_ascii=False, indent=2)
-    _, sha_logs = read_file_from_github(repo, REPO_LOGS_PATH)
-    write_file_to_github(repo, REPO_LOGS_PATH, logs_json, "Update logs", sha_logs)
-
-    # 3. Save Approvals
-    app_json = json.dumps(st.session_state.approvals, ensure_ascii=False, indent=2)
-    _, sha_app = read_file_from_github(repo, REPO_APPROVALS_PATH)
-    write_file_to_github(repo, REPO_APPROVALS_PATH, app_json, "Update approvals", sha_app)
-    
-    # 4. Save Leave Records
-    leave_json = json.dumps(st.session_state.leave_records, ensure_ascii=False, indent=2)
-    _, sha_leave = read_file_from_github(repo, REPO_LEAVE_PATH)
-    write_file_to_github(repo, REPO_LEAVE_PATH, leave_json, "Update leave records", sha_leave)
+        # Prepare DB object
+        db_data = {
+            "groups": st.session_state.data.to_dict(orient="records"),
+            "logs": st.session_state.logs,
+            "approvals": st.session_state.approvals,
+            "leave_records": st.session_state.leave_records
+        }
+        
+        json_content = json.dumps(db_data, ensure_ascii=False, indent=2)
+        
+        # Read SHA first (to allow update)
+        _, sha = read_file_from_github(repo, REPO_DB_PATH)
+        
+        # Write Single File
+        success = write_file_to_github(repo, REPO_DB_PATH, json_content, f"Update: {reason}", sha)
+        
+        if not success:
+            st.error("保存失败，请重试！")
+            return False
+            
+        return True
 
 # --- 页面配置 --- 
 st.set_page_config(page_title="清华企业家班纪律看板", layout="wide") 
