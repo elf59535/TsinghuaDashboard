@@ -198,7 +198,24 @@ st.markdown(f"""
 
 # --- 模拟数据库 (实际使用建议保存为CSV) --- 
 if 'data' not in st.session_state: 
-    st.session_state.data, st.session_state.logs, st.session_state.approvals, st.session_state.leave_records = load_data()
+    try:
+        st.session_state.data, st.session_state.logs, st.session_state.approvals, st.session_state.leave_records = load_data()
+    except Exception as e:
+        st.error(f"Failed to load data from database: {e}")
+        # Fallback to empty state if DB fails
+        groups = ["一组", "二组", "三组", "四组", "五组", "六组", "七组"]
+        st.session_state.data = pd.DataFrame({ 
+            "小组": groups, 
+            "总分": [100.0] * 7, 
+            "自强不息(准时)": [25.0] * 7, 
+            "行胜于言(专注)": [25.0] * 7, 
+            "厚德载物(互助)": [25.0] * 7, 
+            "无体育不清华(活力)": [25.0] * 7,
+            "总请假时长": [0.0] * 7
+        })
+        st.session_state.logs = []
+        st.session_state.approvals = []
+        st.session_state.leave_records = []
 
 # 默认小组密码 (实际应用应从数据库读取)
 GROUP_PASSWORDS = {g: "123" for g in st.session_state.data["小组"]}
