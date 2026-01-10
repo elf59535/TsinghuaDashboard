@@ -218,9 +218,9 @@ def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
                 st.session_state.logs.insert(0, msg)
                 
             # Single DB Sync
-            save_all_data(f"Batch update: {title}")
-            st.success(f"成功更新 {count_updates} 个小组的分数！")
-            st.rerun()
+            if save_all_data(f"Batch update: {title}"):
+                st.success(f"成功更新 {count_updates} 个小组的分数！")
+                st.rerun()
         else:
             st.warning("未检测到有效变动（数量均为0）")
 
@@ -418,10 +418,9 @@ with st.sidebar:
                 st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | 系统消息: {old_name} 更名为 {new_name}")
                 
                 # DB Sync
-                save_all_data(f"Rename group: {old_name} -> {new_name}")
-                
-                st.success("改名成功！")
-                st.rerun()
+                if save_all_data(f"Rename group: {old_name} -> {new_name}"):
+                    st.success("改名成功！")
+                    st.rerun()
             
             st.divider()
             with st.expander("📲 生成分享二维码"):
