@@ -311,7 +311,7 @@ with st.sidebar:
             st.error("❌ 密码错误")
 
 # --- 主界面 --- 
-st.title("💜 清华企业家班：8天能量重塑看板") 
+st.title("💜 清华大学武汉企业家研修二期") 
 st.subheader("“自强不息，厚德载物” —— 班级纪律实时统计") 
 
 # 1. 清华马拉松进度条 (Progress Bars) 
@@ -345,7 +345,10 @@ with tab1:
     df_melt = st.session_state.data.melt(id_vars="小组", value_vars=["自强不息(准时)", "行胜于言(专注)", "厚德载物(互助)", "无体育不清华(活力)"]) 
     fig = px.line_polar(df_melt, r="value", theta="variable", color="小组", line_close=True, 
                         color_discrete_sequence=px.colors.qualitative.Prism) 
-    fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100]))) 
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5)
+    ) 
     st.plotly_chart(fig, use_container_width=True) 
     
 with tab2:
@@ -358,7 +361,7 @@ with tab2:
 # 3. 黑榜 (挂科预警) 与 大事记 
 st.divider() 
 
-with st.expander("⚠️ 挂科预警 (黑榜)", expanded=True):
+with st.expander("⛰️ 思过崖", expanded=True):
     # 1. Low Score Warning
     low_performers = st.session_state.data[st.session_state.data["总分"] < 80]["小组"].tolist() 
     if low_performers: 
