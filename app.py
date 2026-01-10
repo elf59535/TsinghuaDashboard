@@ -206,13 +206,11 @@ def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
                 st.session_state.data.loc[idx, "总分"] += change
                 log_msg = f"{datetime.now().strftime('%H:%M')} | {group} {dimension} {change:+d} | 原因: {reason} ({label}: {count})"
                 st.session_state.logs.insert(0, log_msg)
-                
-                # DB Sync
-                save_all_data(f"Update score: {group}")
-                
                 count_updates += 1
         
         if count_updates > 0:
+            # Single DB Sync after all updates
+            save_all_data(f"Batch update: {title}")
             st.success(f"成功更新 {count_updates} 个小组的分数！")
             st.rerun()
         else:
