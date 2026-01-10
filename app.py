@@ -4,12 +4,187 @@ import pandas as pd
 import plotly.express as px 
 import plotly.graph_objects as go 
 import qrcode
+import json
 from PIL import Image
 from io import BytesIO
 from datetime import datetime 
+from sqlalchemy import text
 
 # Set headless mode to avoid warning
 os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
+
+# --- 数据持久化 (Supabase) ---
+def init_db():
+    """Initialize database tables if not exist"""
+    try:
+        conn = st.connection("supabase", type="sql")
+        with conn.session as s:
+            # Table: groups_data
+            s.execute(text("""
+                CREATE TABLE IF NOT EXISTS groups_data (
+                    group_name TEXT PRIMARY KEY,
+                    total_score FLOAT,
+                    score_punctuality FLOAT,
+                    score_focus FLOAT,
+                    score_help FLOAT,
+                    score_vitality FLOAT,
+                    total_leave_hours FLOAT
+                );
+            """))
+            # Table: logs
+            s.execute(text("""
+                CREATE TABLE IF NOT EXISTS logs (
+                    id SERIAL PRIMARY KEY,
+                    content TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """))
+            # Table: approvals
+            s.execute(text("""
+                CREATE TABLE IF NOT EXISTS approvals (
+                    id SERIAL PRIMARY KEY,
+                    content TEXT
+                );
+            """))
+            # Table: leave_records
+            s.execute(text("""
+                CREATE TABLE IF NOT EXISTS leave_records (
+                    id SERIAL PRIMARY KEY,
+                    group_name TEXT,
+                    name TEXT,
+                    hours FLOAT
+                );
+            """))
+            s.commit()
+    except Exception as e:
+        st.error(f"Database initialization failed: {e}")
+
+def load_data():
+    init_db()
+    conn = st.connection("supabase", type="sql")
+    
+    # Load Groups Data
+    df = conn.query("SELECT * FROM groups_data;", ttl=0)
+    
+    if df.empty:
+        global groups
+        groups = ["一组", "二组", "三组", "四组", "五组", "六组", "七组"]
+        df = pd.DataFrame({ 
+            "小组": groups, 
+            "总分": [100.0] * 7, 
+            "自强不息(准时)": [25.0] * 7, 
+            "行胜于言(专注)": [25.0] * 7, 
+            "厚德载物(互助)": [25.0] * 7, 
+            "无体育不清华(活力)": [25.0] * 7,
+            "总请假时长": [0.0] * 7
+        })
+        # Save initial data to DB
+        with conn.session as s:
+            for _, row in df.iterrows():
+                s.execute(text("""
+                    INSERT INTO groups_data (group_name, total_score, score_punctuality, score_focus, score_help, score_vitality, total_leave_hours)
+                    VALUES (:group_name, :total_score, :score_punctuality, :score_focus, :score_help, :score_vitality, :total_leave_hours)
+                """), {
+                    "group_name": row["小组"],
+                    "total_score": row["总分"],
+                    "score_punctuality": row["自强不息(准时)"],
+                    "score_focus": row["行胜于言(专注)"],
+                    "score_help": row["厚德载物(互助)"],
+                    "score_vitality": row["无体育不清华(活力)"],
+                    "total_leave_hours": row["总请假时长"]
+                })
+            s.commit()
+    else:
+        # Map DB columns to DF columns
+        df = df.rename(columns={
+            "group_name": "小组",
+            "total_score": "总分",
+            "score_punctuality": "自强不息(准时)",
+            "score_focus": "行胜于言(专注)",
+            "score_help": "厚德载物(互助)",
+            "score_vitality": "无体育不清华(活力)",
+            "total_leave_hours": "总请假时长"
+        })
+        global groups
+        groups = df["小组"].tolist()
+
+    # Load Logs
+    logs_df = conn.query("SELECT content FROM logs ORDER BY id DESC;", ttl=0)
+    logs = logs_df["content"].tolist() if not logs_df.empty else []
+
+    # Load Approvals
+    approvals_df = conn.query("SELECT id, content FROM approvals ORDER BY id;", ttl=0)
+    approvals = []
+    if not approvals_df.empty:
+        for _, row in approvals_df.iterrows():
+            item = json.loads(row["content"])
+            item["db_id"] = row["id"] # Keep track of DB ID for deletion
+            approvals.append(item)
+
+    # Load Leave Records
+    leave_df = conn.query("SELECT group_name, name, hours FROM leave_records;", ttl=0)
+    leave_records = []
+    if not leave_df.empty:
+        for _, row in leave_df.iterrows():
+            leave_records.append({
+                "group": row["group_name"],
+                "name": row["name"],
+                "hours": row["hours"]
+            })
+
+    return df, logs, approvals, leave_records
+
+def save_group_data(group_name, dimension, change, total_change, leave_change=0):
+    conn = st.connection("supabase", type="sql")
+    col_map = {
+        "自强不息(准时)": "score_punctuality",
+        "行胜于言(专注)": "score_focus",
+        "厚德载物(互助)": "score_help",
+        "无体育不清华(活力)": "score_vitality"
+    }
+    db_col = col_map.get(dimension)
+    
+    with conn.session as s:
+        if db_col:
+            s.execute(text(f"""
+                UPDATE groups_data 
+                SET {db_col} = {db_col} + :change, 
+                    total_score = total_score + :total_change
+                WHERE group_name = :group_name
+            """), {"change": change, "total_change": total_change, "group_name": group_name})
+        
+        if leave_change > 0:
+             s.execute(text("""
+                UPDATE groups_data 
+                SET total_leave_hours = total_leave_hours + :leave_change
+                WHERE group_name = :group_name
+            """), {"leave_change": leave_change, "group_name": group_name})
+        s.commit()
+
+def add_log(content):
+    conn = st.connection("supabase", type="sql")
+    with conn.session as s:
+        s.execute(text("INSERT INTO logs (content) VALUES (:content)"), {"content": content})
+        s.commit()
+
+def add_approval(item):
+    conn = st.connection("supabase", type="sql")
+    with conn.session as s:
+        s.execute(text("INSERT INTO approvals (content) VALUES (:content)"), {"content": json.dumps(item)})
+        s.commit()
+
+def delete_approval(db_id):
+    conn = st.connection("supabase", type="sql")
+    with conn.session as s:
+        s.execute(text("DELETE FROM approvals WHERE id = :id"), {"id": db_id})
+        s.commit()
+
+def add_leave_record(group, name, hours):
+    conn = st.connection("supabase", type="sql")
+    with conn.session as s:
+        s.execute(text("INSERT INTO leave_records (group_name, name, hours) VALUES (:group, :name, :hours)"), 
+                 {"group": group, "name": name, "hours": hours})
+        s.commit()
 
 # --- 页面配置 --- 
 st.set_page_config(page_title="清华企业家班纪律看板", layout="wide") 
@@ -26,22 +201,10 @@ st.markdown(f"""
 
 # --- 模拟数据库 (实际使用建议保存为CSV) --- 
 if 'data' not in st.session_state: 
-    groups = ["一组", "二组", "三组", "四组", "五组", "六组", "七组"]
-    st.session_state.data = pd.DataFrame({ 
-        "小组": groups, 
-        "总分": [100] * 7, 
-        "自强不息(准时)": [25] * 7, 
-        "行胜于言(专注)": [25] * 7, 
-        "厚德载物(互助)": [25] * 7, 
-        "无体育不清华(活力)": [25] * 7,
-        "总请假时长": [0.0] * 7
-    }) 
-    st.session_state.logs = [] 
-    st.session_state.approvals = [] # 待审核队列
-    st.session_state.leave_records = [] # 请假记录: {group, name, hours}
+    st.session_state.data, st.session_state.logs, st.session_state.approvals, st.session_state.leave_records = load_data()
 
 # 默认小组密码 (实际应用应从数据库读取)
-GROUP_PASSWORDS = {g: "123" for g in st.session_state.data["小组"]}
+GROUP_PASSWORDS = {g: "123" for g in groups}
 
 @st.dialog("批量快速评分", width="large")
 def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
@@ -82,7 +245,13 @@ def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
                 idx = st.session_state.data[st.session_state.data["小组"] == group].index[0]
                 st.session_state.data.loc[idx, dimension] += change
                 st.session_state.data.loc[idx, "总分"] += change
-                st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | {group} {dimension} {change:+d} | 原因: {reason} ({label}: {count})")
+                log_msg = f"{datetime.now().strftime('%H:%M')} | {group} {dimension} {change:+d} | 原因: {reason} ({label}: {count})"
+                st.session_state.logs.insert(0, log_msg)
+                
+                # DB Sync
+                save_group_data(group, dimension, change, change)
+                add_log(log_msg)
+                
                 count_updates += 1
         
         if count_updates > 0:
@@ -105,7 +274,13 @@ def single_quick_score_dialog(dimension, unit, label, default_reason):
         idx = st.session_state.data[st.session_state.data["小组"] == group].index[0]
         st.session_state.data.loc[idx, dimension] += change
         st.session_state.data.loc[idx, "总分"] += change
-        st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | {group} {dimension} {change:+d} | 原因: {reason} ({label}: {count})")
+        log_msg = f"{datetime.now().strftime('%H:%M')} | {group} {dimension} {change:+d} | 原因: {reason} ({label}: {count})"
+        st.session_state.logs.insert(0, log_msg)
+        
+        # DB Sync
+        save_group_data(group, dimension, change, change)
+        add_log(log_msg)
+        
         st.success("扣分成功！")
         st.rerun()
 
@@ -119,15 +294,20 @@ def leader_quick_submit_dialog(group_name, dimension, unit, label, default_reaso
     
     if st.button("提交审核"):
         change = count * unit
-        # Add to approvals
-        st.session_state.approvals.append({
+        item = {
             "timestamp": datetime.now().strftime('%H:%M'),
             "group": group_name,
             "dimension": dimension,
             "change": change,
             "reason": f"{reason} ({label}: {count})",
             "status": "pending"
-        })
+        }
+        # Add to approvals
+        st.session_state.approvals.append(item)
+        
+        # DB Sync
+        add_approval(item)
+        
         st.success("✅ 申请已提交！请通知管理员审核。")
         st.rerun()
 
@@ -144,9 +324,8 @@ def leave_submit_dialog(group_name):
         if not name:
             st.error("请输入姓名")
             return
-            
-        # Add to approvals
-        st.session_state.approvals.append({
+        
+        item = {
             "timestamp": datetime.now().strftime('%H:%M'),
             "type": "leave",
             "group": group_name,
@@ -154,7 +333,13 @@ def leave_submit_dialog(group_name):
             "hours": hours,
             "reason": reason,
             "status": "pending"
-        })
+        }
+        # Add to approvals
+        st.session_state.approvals.append(item)
+        
+        # DB Sync
+        add_approval(item)
+        
         st.success("✅ 请假申请已提交！请通知管理员审核。")
         st.rerun()
 
@@ -194,12 +379,22 @@ with st.sidebar:
                                 idx = st.session_state.data[st.session_state.data["小组"] == item['group']].index[0]
                                 st.session_state.data.loc[idx, "总请假时长"] += item['hours']
                                 
-                                st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | [请假批准] {item['group']}-{item['name']} 请假 {item['hours']}小时")
+                                log_msg = f"{datetime.now().strftime('%H:%M')} | [请假批准] {item['group']}-{item['name']} 请假 {item['hours']}小时"
+                                st.session_state.logs.insert(0, log_msg)
                                 st.session_state.approvals.pop(i)
+                                
+                                # DB Sync
+                                add_leave_record(item['group'], item['name'], item['hours'])
+                                save_group_data(item['group'], None, 0, 0, leave_change=item['hours'])
+                                add_log(log_msg)
+                                delete_approval(item.get("db_id"))
+                                
                                 st.rerun()
                                 
                             if c2.button("❌ 驳回", key=f"rej_{i}"):
                                 st.session_state.approvals.pop(i)
+                                # DB Sync
+                                delete_approval(item.get("db_id"))
                                 st.rerun()
                                 
                         else:
@@ -213,12 +408,21 @@ with st.sidebar:
                                 idx = st.session_state.data[st.session_state.data["小组"] == item['group']].index[0]
                                 st.session_state.data.loc[idx, item['dimension']] += item['change']
                                 st.session_state.data.loc[idx, "总分"] += item['change']
-                                st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | [审核通过] {item['group']} {item['dimension']} {item['change']:+d} | 原因: {item['reason']}")
+                                log_msg = f"{datetime.now().strftime('%H:%M')} | [审核通过] {item['group']} {item['dimension']} {item['change']:+d} | 原因: {item['reason']}"
+                                st.session_state.logs.insert(0, log_msg)
                                 st.session_state.approvals.pop(i)
+                                
+                                # DB Sync
+                                save_group_data(item['group'], item['dimension'], item['change'], item['change'])
+                                add_log(log_msg)
+                                delete_approval(item.get("db_id"))
+                                
                                 st.rerun()
                                 
                             if c2.button("❌ 驳回", key=f"rej_{i}"):
                                 st.session_state.approvals.pop(i)
+                                # DB Sync
+                                delete_approval(item.get("db_id"))
                                 st.rerun()
                         st.divider()
             else:
@@ -253,9 +457,18 @@ with st.sidebar:
                     else:
                         idx = st.session_state.data[st.session_state.data["小组"] == old_name].index[0]
                         st.session_state.data.at[idx, "小组"] = new_name
-                        st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | 系统消息: {old_name} 更名为 {new_name}")
-                        st.success("改名成功！")
-                        st.rerun()
+                st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | 系统消息: {old_name} 更名为 {new_name}")
+                
+                # DB Sync - Need raw SQL for rename or update
+                conn = st.connection("supabase", type="sql")
+                with conn.session as s:
+                    s.execute(text("UPDATE groups_data SET group_name = :new WHERE group_name = :old"), 
+                             {"new": new_name, "old": old_name})
+                    s.commit()
+                add_log(f"{datetime.now().strftime('%H:%M')} | 系统消息: {old_name} 更名为 {new_name}")
+                
+                st.success("改名成功！")
+                st.rerun()
             
             st.divider()
             with st.expander("📲 生成分享二维码"):
