@@ -195,15 +195,18 @@ def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
         "备注": st.column_config.TextColumn("备注")
     }
     
-    edited_df = st.data_editor(
-        df_template,
-        column_config=column_config,
-        hide_index=True,
-        use_container_width=True,
-        key=f"editor_{title}"
-    )
+    # Use st.form to prevent rerun on every edit
+    with st.form(key=f"form_{title}"):
+        edited_df = st.data_editor(
+            df_template,
+            column_config=column_config,
+            hide_index=True,
+            use_container_width=True,
+            key=f"editor_{title}"
+        )
+        submit_btn = st.form_submit_button("确认提交")
     
-    if st.button("确认提交", key=f"btn_{title}"):
+    if submit_btn:
         count_updates = 0
         updates_info = [] 
         
@@ -265,10 +268,12 @@ def leader_quick_submit_dialog(group_name, dimension, unit, label, default_reaso
     st.markdown(f"### 📝 {group_name} - {label}登记")
     st.markdown(f"**规则：每{label} {unit:+d} 分**")
     
-    count = st.number_input(f"输入{label}", min_value=1, value=1, step=1)
-    reason = st.text_input("备注说明", value=default_reason)
+    with st.form(key=f"form_leader_{group_name}_{label}"):
+        count = st.number_input(f"输入{label}", min_value=1, value=1, step=1)
+        reason = st.text_input("备注说明", value=default_reason)
+        submit_btn = st.form_submit_button("提交审核")
     
-    if st.button("提交审核"):
+    if submit_btn:
         change = count * unit
         item = {
             "timestamp": datetime.now().strftime('%H:%M'),
@@ -292,11 +297,13 @@ def leave_submit_dialog(group_name):
     st.markdown(f"### 📝 {group_name} - 请假登记")
     st.info(f"总学时：42小时。个人请假超过20% ({MAX_LEAVE_HOURS}小时) 将不予结业。")
     
-    name = st.text_input("学员姓名")
-    hours = st.number_input("请假时长 (小时)", min_value=0.5, step=0.5)
-    reason = st.text_input("请假原因", placeholder="例如：公司紧急会议")
+    with st.form(key=f"form_leave_{group_name}"):
+        name = st.text_input("学员姓名")
+        hours = st.number_input("请假时长 (小时)", min_value=0.5, step=0.5)
+        reason = st.text_input("请假原因", placeholder="例如：公司紧急会议")
+        submit_btn = st.form_submit_button("提交请假")
     
-    if st.button("提交请假"):
+    if submit_btn:
         if not name:
             st.error("请输入姓名")
             return
