@@ -1,25 +1,48 @@
 import os
-import streamlit as st 
-import pandas as pd 
-import plotly.express as px 
-import plotly.graph_objects as go 
-import qrcode
 import json
-from PIL import Image
+from datetime import datetime
 from io import BytesIO
-from datetime import datetime 
+
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import qrcode
 from github import Github, GithubException
 
+# --- Page Configuration ---
+# Must be the first Streamlit command
+st.set_page_config(page_title="清华企业家班纪律看板", layout="wide", page_icon="💜")
+
+# --- Environment Setup ---
 # Set headless mode to avoid warning
 os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
 
-# --- 数据持久化 (GitHub) ---
-# GitHub File Paths (in repo)
+# --- Constants & Configuration ---
+TSINGHUA_PURPLE = "#660874"
 REPO_DB_PATH = "data/database.json"
+TARGET_SCORE = 500
+LOW_SCORE_THRESHOLD = 80
+MAX_LEAVE_HOURS = 8.4  # 20% of 42 hours
+
+# Custom CSS for styling
+st.markdown(f"""
+    <style>
+    .main {{ background-color: #f5f5f5; }}
+    .stHeader {{ color: {TSINGHUA_PURPLE}; }}
+    .stProgress > div > div > div > div {{ background-color: {TSINGHUA_PURPLE}; }}
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- GitHub Data Storage Functions ---
 
 def get_github_repo():
-    """Get GitHub repository object"""
+    """Get GitHub repository object using secrets."""
     try:
+        # Check if secrets are available
+        if "github" not in st.secrets:
+            st.error("Missing 'github' section in .streamlit/secrets.toml")
+            return None
+            
         token = st.secrets["github"]["token"]
         g = Github(token)
         repo_name = f"{st.secrets['github']['owner']}/{st.secrets['github']['repo']}"
@@ -29,9 +52,10 @@ def get_github_repo():
         return None
 
 def read_file_from_github(repo, file_path):
-    """Read file content from GitHub"""
+    """Read file content from GitHub."""
     try:
-        contents = repo.get_contents(file_path, ref=st.secrets["github"]["branch"])
+        branch = st.secrets["github"].get("branch", "main")
+        contents = repo.get_contents(file_path, ref=branch)
         return contents.decoded_content.decode("utf-8"), contents.sha
     except GithubException as e:
         if e.status == 404:
@@ -39,46 +63,44 @@ def read_file_from_github(repo, file_path):
         raise e
 
 def write_file_to_github(repo, file_path, content, message, sha=None):
-    """Write content to GitHub file"""
+    """Write content to GitHub file."""
     try:
+        branch = st.secrets["github"].get("branch", "main")
         if sha:
-            repo.update_file(file_path, message, content, sha, branch=st.secrets["github"]["branch"])
+            repo.update_file(file_path, message, content, sha, branch=branch)
         else:
-            repo.create_file(file_path, message, content, branch=st.secrets["github"]["branch"])
+            repo.create_file(file_path, message, content, branch=branch)
         return True
     except Exception as e:
         st.error(f"GitHub Write Failed: {e}")
         return False
 
 def load_data():
+    """Load data from GitHub or initialize default data."""
     repo = get_github_repo()
     if not repo:
-        raise Exception("Could not connect to GitHub")
+        # Fallback for local testing without secrets or connection failure
+        st.warning("Running in offline mode (GitHub not connected). Data will not be saved permanently.")
+        return create_default_data()
 
     # Load All Data from Single JSON
     content, _ = read_file_from_github(repo, REPO_DB_PATH)
     
     if content:
-        db = json.loads(content)
-        df = pd.DataFrame(db.get("groups", []))
-        logs = db.get("logs", [])
-        approvals = db.get("approvals", [])
-        leave_records = db.get("leave_records", [])
+        try:
+            db = json.loads(content)
+            df = pd.DataFrame(db.get("groups", []))
+            logs = db.get("logs", [])
+            approvals = db.get("approvals", [])
+            leave_records = db.get("leave_records", [])
+            return df, logs, approvals, leave_records
+        except json.JSONDecodeError:
+            st.error("Database file is corrupted. Loading default data.")
+            return create_default_data()
     else:
         # Initialize if not exists
-        groups = ["一组", "二组", "三组", "四组", "五组", "六组", "七组"]
-        df = pd.DataFrame({ 
-            "小组": groups, 
-            "总分": [100.0] * 7, 
-            "自强不息(准时)": [25.0] * 7, 
-            "行胜于言(专注)": [25.0] * 7, 
-            "厚德载物(互助)": [25.0] * 7, 
-            "无体育不清华(活力)": [25.0] * 7,
-            "总请假时长": [0.0] * 7
-        })
-        logs = []
-        approvals = []
-        leave_records = []
+        st.info("Initializing new database on GitHub...")
+        df, logs, approvals, leave_records = create_default_data()
         
         # Save initial to GitHub
         initial_db = {
@@ -88,11 +110,24 @@ def load_data():
             "leave_records": leave_records
         }
         write_file_to_github(repo, REPO_DB_PATH, json.dumps(initial_db, ensure_ascii=False, indent=2), "Init database.json")
+        return df, logs, approvals, leave_records
 
-    return df, logs, approvals, leave_records
+def create_default_data():
+    """Create default initial data structure."""
+    groups = ["一组", "二组", "三组", "四组", "五组", "六组", "七组"]
+    df = pd.DataFrame({ 
+        "小组": groups, 
+        "总分": [100.0] * 7, 
+        "自强不息(准时)": [25.0] * 7, 
+        "行胜于言(专注)": [25.0] * 7, 
+        "厚德载物(互助)": [25.0] * 7, 
+        "无体育不清华(活力)": [25.0] * 7,
+        "总请假时长": [0.0] * 7
+    })
+    return df, [], [], []
 
 def save_all_data(reason="Update data"):
-    """Save all session state data to GitHub"""
+    """Save all session state data to GitHub with UI feedback."""
     status = st.status("正在同步数据到云端...", expanded=True)
     try:
         repo = get_github_repo()
@@ -128,42 +163,19 @@ def save_all_data(reason="Update data"):
         status.update(label=f"发生错误: {str(e)}", state="error")
         return False
 
-# --- 页面配置 --- 
-st.set_page_config(page_title="清华企业家班纪律看板", layout="wide") 
+# --- Initialization ---
 
-# 清华紫主题色 
-TSINGHUA_PURPLE = "#660874" 
-st.markdown(f""" 
-    <style> 
-    .main {{ background-color: #f5f5f5; }} 
-    .stHeader {{ color: {TSINGHUA_PURPLE}; }} 
-    .stProgress > div > div > div > div {{ background-color: {TSINGHUA_PURPLE}; }} 
-    </style> 
-    """, unsafe_allow_html=True) 
-
-# --- 模拟数据库 (实际使用建议保存为CSV) --- 
-if 'data' not in st.session_state: 
+if 'data' not in st.session_state:
     try:
         st.session_state.data, st.session_state.logs, st.session_state.approvals, st.session_state.leave_records = load_data()
     except Exception as e:
-        st.error(f"Failed to load data from database: {e}")
-        # Fallback to empty state if DB fails
-        groups = ["一组", "二组", "三组", "四组", "五组", "六组", "七组"]
-        st.session_state.data = pd.DataFrame({ 
-            "小组": groups, 
-            "总分": [100.0] * 7, 
-            "自强不息(准时)": [25.0] * 7, 
-            "行胜于言(专注)": [25.0] * 7, 
-            "厚德载物(互助)": [25.0] * 7, 
-            "无体育不清华(活力)": [25.0] * 7,
-            "总请假时长": [0.0] * 7
-        })
-        st.session_state.logs = []
-        st.session_state.approvals = []
-        st.session_state.leave_records = []
+        st.error(f"Failed to load data: {e}")
+        st.session_state.data, st.session_state.logs, st.session_state.approvals, st.session_state.leave_records = create_default_data()
 
-# 默认小组密码 (实际应用应从数据库读取)
+# Default Group Passwords (In a real app, these should be secure)
 GROUP_PASSWORDS = {g: "123" for g in st.session_state.data["小组"]}
+
+# --- Dialog Functions ---
 
 @st.dialog("批量快速评分", width="large")
 def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
@@ -179,7 +191,7 @@ def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
     
     column_config = {
         "小组": st.column_config.TextColumn("小组", disabled=True),
-        label: st.column_config.NumberColumn(label, min_value=0, step=1, required=True),
+        label: st.column_config.NumberColumn(label, min_value=0, step=1),
         "备注": st.column_config.TextColumn("备注")
     }
     
@@ -193,8 +205,9 @@ def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
     
     if st.button("确认提交", key=f"btn_{title}"):
         count_updates = 0
-        updates_info = [] # Store logs to add later
+        updates_info = [] 
         
+        # Calculate changes in memory first
         for _, row in edited_df.iterrows():
             count = row[label]
             if count > 0:
@@ -213,8 +226,8 @@ def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
                 count_updates += 1
         
         if count_updates > 0:
-            # Batch Insert Logs
-            for msg in reversed(updates_info): # Insert in reverse to keep order
+            # Batch Insert Logs (reverse order to keep latest first in list)
+            for msg in reversed(updates_info):
                 st.session_state.logs.insert(0, msg)
                 
             # Single DB Sync
@@ -277,7 +290,7 @@ def leader_quick_submit_dialog(group_name, dimension, unit, label, default_reaso
 @st.dialog("提交请假申请")
 def leave_submit_dialog(group_name):
     st.markdown(f"### 📝 {group_name} - 请假登记")
-    st.info("总学时：42小时。个人请假超过20% (8.4小时) 将不予结业。")
+    st.info(f"总学时：42小时。个人请假超过20% ({MAX_LEAVE_HOURS}小时) 将不予结业。")
     
     name = st.text_input("学员姓名")
     hours = st.number_input("请假时长 (小时)", min_value=0.5, step=0.5)
@@ -306,23 +319,23 @@ def leave_submit_dialog(group_name):
         st.success("✅ 请假申请已提交！请通知管理员审核。")
         st.rerun()
 
-# --- 侧边栏：角色控制台 --- 
-with st.sidebar: 
-    st.header("⚙️ 班级控制台") 
+# --- Sidebar: Role Control ---
+with st.sidebar:
+    st.header("⚙️ 班级控制台")
     
-    # 角色切换
+    # Role Switcher
     role = st.radio("当前身份", ["管理员", "小组组长"], horizontal=True)
     st.divider()
 
     if role == "管理员":
         password = st.text_input("管理员密码", type="password") 
-        if password == "THU2024": # 预设密码 
+        if password == "THU2024": # Default Admin Password
             
-            # --- 审核队列 ---
+            # --- Approval Queue ---
             if st.session_state.approvals:
                 st.warning(f"🔔 有 {len(st.session_state.approvals)} 条待审核申请")
                 with st.expander("📋 审核队列 (点击处理)", expanded=True):
-                    # Iterate copy to modify list safely
+                    # Iterate over a copy to safely modify the list
                     for i, item in enumerate(list(st.session_state.approvals)):
                         st.markdown(f"**{item['group']}**")
                         
@@ -348,7 +361,6 @@ with st.sidebar:
                                 
                                 # DB Sync
                                 save_all_data(f"Approve leave: {item['name']}")
-                                
                                 st.rerun()
                                 
                             if c2.button("❌ 驳回", key=f"rej_{i}"):
@@ -374,7 +386,6 @@ with st.sidebar:
                                 
                                 # DB Sync
                                 save_all_data(f"Approve score: {item['group']}")
-                                
                                 st.rerun()
                                 
                             if c2.button("❌ 驳回", key=f"rej_{i}"):
@@ -415,12 +426,12 @@ with st.sidebar:
                     else:
                         idx = st.session_state.data[st.session_state.data["小组"] == old_name].index[0]
                         st.session_state.data.at[idx, "小组"] = new_name
-                st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | 系统消息: {old_name} 更名为 {new_name}")
-                
-                # DB Sync
-                if save_all_data(f"Rename group: {old_name} -> {new_name}"):
-                    st.success("改名成功！")
-                    st.rerun()
+                        st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | 系统消息: {old_name} 更名为 {new_name}")
+                        
+                        # DB Sync
+                        if save_all_data(f"Rename group: {old_name} -> {new_name}"):
+                            st.success("改名成功！")
+                            st.rerun()
             
             st.divider()
             with st.expander("📲 生成分享二维码"):
@@ -443,10 +454,13 @@ with st.sidebar:
                         file_name="dashboard_qr.png",
                         mime="image/png"
                     )
-        else: 
-            st.info("请输入密码解锁管理权限") 
+        else:
+            if password:
+                st.error("密码错误")
+            else:
+                st.info("请输入密码解锁管理权限")
             
-    else: # 小组组长
+    else: # Group Leader
         st.subheader("组长工作台")
         selected_group = st.selectbox("选择你的小组", st.session_state.data["小组"])
         gp_pw = st.text_input("小组密码", type="password", help="默认密码为 123")
@@ -475,23 +489,22 @@ with st.sidebar:
         elif gp_pw:
             st.error("❌ 密码错误")
 
-# --- 主界面 --- 
-st.title("💜 清华大学武汉企业家研修二期") 
-st.subheader("“自强不息，厚德载物” —— 班级纪律实时统计") 
+# --- Main Dashboard Display ---
+st.title("💜 清华大学武汉企业家研修二期")
+st.subheader("“自强不息，厚德载物” —— 班级纪律实时统计")
 
-# 1. 清华马拉松进度条 (Progress Bars) 
-st.markdown("### 🏃 清华园马拉松进度 (目标: 500分)") 
+# 1. Marathon Progress
+st.markdown(f"### 🏃 清华园马拉松进度 (目标: {TARGET_SCORE}分)")
 
-# 使用 st.columns(2) 创建两列布局，在移动端会自动堆叠
+# Use st.columns(2) for responsive grid
 for i, row in st.session_state.data.iterrows():
-    # 每两行数据分一组
     if i % 2 == 0:
         cols = st.columns(2)
     
     col_idx = i % 2
     with cols[col_idx]:
         st.markdown(f"**{row['小组']}**")
-        progress = min(row['总分'] / 500, 1.0) # 假设500分为终点 
+        progress = min(row['总分'] / TARGET_SCORE, 1.0)
         st.progress(progress)
         st.caption(f"当前积分: {int(row['总分'])} 分")
         
@@ -500,45 +513,50 @@ for i, row in st.session_state.data.iterrows():
         if leave_hours > 0:
             st.info(f"📅 请假累计: {leave_hours}h")
 
-st.divider() 
+st.divider()
 
-# 2. 核心图表区 
+# 2. Charts
 tab1, tab2 = st.tabs(["🕸️ 能量雷达", "🏆 积分排行"])
 
 with tab1:
-    # 转换数据为长表以适配 Plotly 
-    df_melt = st.session_state.data.melt(id_vars="小组", value_vars=["自强不息(准时)", "行胜于言(专注)", "厚德载物(互助)", "无体育不清华(活力)"]) 
-    fig = px.line_polar(df_melt, r="value", theta="variable", color="小组", line_close=True, 
-                        color_discrete_sequence=px.colors.qualitative.Prism) 
+    # Melt data for Radar Chart
+    df_melt = st.session_state.data.melt(
+        id_vars="小组", 
+        value_vars=["自强不息(准时)", "行胜于言(专注)", "厚德载物(互助)", "无体育不清华(活力)"]
+    )
+    fig = px.line_polar(
+        df_melt, r="value", theta="variable", color="小组", line_close=True,
+        color_discrete_sequence=px.colors.qualitative.Prism
+    )
     fig.update_layout(
         polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5)
-    ) 
-    st.plotly_chart(fig, use_container_width=True) 
+    )
+    st.plotly_chart(fig, use_container_width=True)
     
 with tab2:
-    rank_df = st.session_state.data[["小组", "总分"]].sort_values(by="总分", ascending=False) 
-    fig_rank = px.bar(rank_df, x="总分", y="小组", orientation='h', 
-                      color="总分", color_continuous_scale="Purples") 
-    fig_rank.update_layout(showlegend=False) 
-    st.plotly_chart(fig_rank, use_container_width=True) 
+    rank_df = st.session_state.data[["小组", "总分"]].sort_values(by="总分", ascending=False)
+    fig_rank = px.bar(
+        rank_df, x="总分", y="小组", orientation='h',
+        color="总分", color_continuous_scale="Purples"
+    )
+    fig_rank.update_layout(showlegend=False)
+    st.plotly_chart(fig_rank, use_container_width=True)
 
-# 3. 黑榜 (挂科预警) 与 大事记 
-st.divider() 
+# 3. Alerts and Logs
+st.divider()
 
-with st.expander("⛰️ 思过崖", expanded=True):
+with st.expander("⛰️ 思过崖 (预警区)", expanded=True):
     # 1. Low Score Warning
-    low_performers = st.session_state.data[st.session_state.data["总分"] < 80]["小组"].tolist() 
-    if low_performers: 
-        for group in low_performers: 
-            st.error(f"🚨 {group}：学分亮红灯，请及时充能！") 
+    low_performers = st.session_state.data[st.session_state.data["总分"] < LOW_SCORE_THRESHOLD]["小组"].tolist()
+    if low_performers:
+        for group in low_performers:
+            st.error(f"🚨 {group}：学分亮红灯 (<{LOW_SCORE_THRESHOLD}分)，请及时充能！")
             
-    # 2. Leave Warning (>20% = 8.4h)
-    MAX_LEAVE_HOURS = 8.4
+    # 2. Leave Warning
     has_leave_warning = False
     
-    # Check individual records
-    # Aggregate leave by person
+    # Aggregate leave by person (names can be duplicated across groups, so key by group+name)
     person_leaves = {}
     for record in st.session_state.leave_records:
         key = f"{record['group']}-{record['name']}"
@@ -546,12 +564,15 @@ with st.expander("⛰️ 思过崖", expanded=True):
         
     for key, total_hours in person_leaves.items():
         if total_hours > MAX_LEAVE_HOURS:
-            st.error(f"🚫 不予结业：{key} (请假 {total_hours}h > 8.4h)")
+            st.error(f"🚫 不予结业：{key} (请假 {total_hours}h > {MAX_LEAVE_HOURS}h)")
             has_leave_warning = True
             
-    if not low_performers and not has_leave_warning: 
-        st.success("🎉 暂无小组挂科，全员优异！") 
+    if not low_performers and not has_leave_warning:
+        st.success("🎉 暂无小组挂科，全员优异！")
 
 with st.expander("📜 班级能量日志", expanded=False):
-    for log in st.session_state.logs[:10]: # 显示最近10条
-        st.text(log)
+    if st.session_state.logs:
+        for log in st.session_state.logs[:10]: # Show last 10
+            st.text(log)
+    else:
+        st.text("暂无记录")
