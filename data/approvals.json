@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "timestamp": "13:44",
+    "group": "一组",
+    "dimension": "自强不息(准时)",
+    "change": -5,
+    "reason": "组员迟到 (迟到人数: 1)",
+    "status": "pending"
+  }
+]
