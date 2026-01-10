@@ -824,6 +824,15 @@
       "change": -5,
       "reason": "组员迟到 (迟到人数: 1)",
       "status": "pending"
+    },
+    {
+      "timestamp": "14:12",
+      "type": "leave",
+      "group": "一组",
+      "name": "里",
+      "hours": 0.5,
+      "reason": "",
+      "status": "pending"
     }
   ],
   "leave_records": []
