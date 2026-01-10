@@ -1,0 +1,283 @@
+import os
+import streamlit as st 
+import pandas as pd 
+import plotly.express as px 
+import plotly.graph_objects as go 
+from datetime import datetime 
+
+# Set headless mode to avoid warning
+os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
+
+# --- 页面配置 --- 
+st.set_page_config(page_title="清华企业家班纪律看板", layout="wide") 
+
+# 清华紫主题色 
+TSINGHUA_PURPLE = "#660874" 
+st.markdown(f""" 
+    <style> 
+    .main {{ background-color: #f5f5f5; }} 
+    .stHeader {{ color: {TSINGHUA_PURPLE}; }} 
+    .stProgress > div > div > div > div {{ background-color: {TSINGHUA_PURPLE}; }} 
+    </style> 
+    """, unsafe_allow_html=True) 
+
+# --- 模拟数据库 (实际使用建议保存为CSV) --- 
+if 'data' not in st.session_state: 
+    groups = ["一组", "二组", "三组", "四组", "五组", "六组", "七组"]
+    st.session_state.data = pd.DataFrame({ 
+        "小组": groups, 
+        "总分": [100] * 7, 
+        "自强不息(准时)": [25] * 7, 
+        "行胜于言(专注)": [25] * 7, 
+        "厚德载物(互助)": [25] * 7, 
+        "无体育不清华(活力)": [25] * 7 
+    }) 
+    st.session_state.logs = [] 
+    st.session_state.approvals = [] # 待审核队列
+
+# 默认小组密码 (实际应用应从数据库读取)
+GROUP_PASSWORDS = {g: "123" for g in st.session_state.data["小组"]}
+
+@st.dialog("批量快速评分", width="large")
+def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
+    st.markdown(f"### {title}")
+    st.markdown(f"**计分规则：{label} × {unit} 分**")
+    
+    # Prepare data for editor
+    df_template = pd.DataFrame({
+        "小组": st.session_state.data["小组"].tolist(),
+        label: [0] * len(st.session_state.data),
+        "备注": [default_reason] * len(st.session_state.data)
+    })
+    
+    column_config = {
+        "小组": st.column_config.TextColumn("小组", disabled=True),
+        label: st.column_config.NumberColumn(label, min_value=0, step=1, required=True),
+        "备注": st.column_config.TextColumn("备注")
+    }
+    
+    edited_df = st.data_editor(
+        df_template,
+        column_config=column_config,
+        hide_index=True,
+        use_container_width=True,
+        key=f"editor_{title}"
+    )
+    
+    if st.button("确认提交", key=f"btn_{title}"):
+        count_updates = 0
+        for _, row in edited_df.iterrows():
+            count = row[label]
+            if count > 0:
+                group = row["小组"]
+                reason = row["备注"]
+                change = count * unit
+                
+                # Update
+                idx = st.session_state.data[st.session_state.data["小组"] == group].index[0]
+                st.session_state.data.loc[idx, dimension] += change
+                st.session_state.data.loc[idx, "总分"] += change
+                st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | {group} {dimension} {change:+d} | 原因: {reason} ({label}: {count})")
+                count_updates += 1
+        
+        if count_updates > 0:
+            st.success(f"成功更新 {count_updates} 个小组的分数！")
+            st.rerun()
+        else:
+            st.warning("未检测到有效变动（数量均为0）")
+
+@st.dialog("违纪扣分")
+def single_quick_score_dialog(dimension, unit, label, default_reason):
+    st.markdown(f"**当前维度：{dimension}**")
+    st.markdown(f"**规则：每{label} {unit:+d} 分**")
+    
+    group = st.selectbox("选择小组", st.session_state.data["小组"].tolist())
+    count = st.number_input(f"输入{label}", min_value=1, value=1, step=1)
+    reason = st.text_input("备注", value=default_reason)
+    
+    if st.button("确认提交"):
+        change = count * unit
+        idx = st.session_state.data[st.session_state.data["小组"] == group].index[0]
+        st.session_state.data.loc[idx, dimension] += change
+        st.session_state.data.loc[idx, "总分"] += change
+        st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | {group} {dimension} {change:+d} | 原因: {reason} ({label}: {count})")
+        st.success("扣分成功！")
+        st.rerun()
+
+@st.dialog("提交加分/扣分申请")
+def leader_quick_submit_dialog(group_name, dimension, unit, label, default_reason):
+    st.markdown(f"### 📝 {group_name} - {label}登记")
+    st.markdown(f"**规则：每{label} {unit:+d} 分**")
+    
+    count = st.number_input(f"输入{label}", min_value=1, value=1, step=1)
+    reason = st.text_input("备注说明", value=default_reason)
+    
+    if st.button("提交审核"):
+        change = count * unit
+        # Add to approvals
+        st.session_state.approvals.append({
+            "timestamp": datetime.now().strftime('%H:%M'),
+            "group": group_name,
+            "dimension": dimension,
+            "change": change,
+            "reason": f"{reason} ({label}: {count})",
+            "status": "pending"
+        })
+        st.success("✅ 申请已提交！请通知管理员审核。")
+        st.rerun()
+
+# --- 侧边栏：角色控制台 --- 
+with st.sidebar: 
+    st.header("⚙️ 班级控制台") 
+    
+    # 角色切换
+    role = st.radio("当前身份", ["管理员", "小组组长"], horizontal=True)
+    st.divider()
+
+    if role == "管理员":
+        password = st.text_input("管理员密码", type="password") 
+        if password == "THU2024": # 预设密码 
+            
+            # --- 审核队列 ---
+            if st.session_state.approvals:
+                st.warning(f"🔔 有 {len(st.session_state.approvals)} 条待审核申请")
+                with st.expander("📋 审核队列 (点击处理)", expanded=True):
+                    # Iterate copy to modify list safely
+                    for i, item in enumerate(list(st.session_state.approvals)):
+                        st.markdown(f"**{item['group']}**")
+                        st.caption(f"{item['dimension']} | {item['change']:+d}分 | {item['timestamp']}")
+                        st.text(f"原因: {item['reason']}")
+                        
+                        c1, c2 = st.columns(2)
+                        if c1.button("✅ 通过", key=f"app_{i}"):
+                            # Apply change
+                            idx = st.session_state.data[st.session_state.data["小组"] == item['group']].index[0]
+                            st.session_state.data.loc[idx, item['dimension']] += item['change']
+                            st.session_state.data.loc[idx, "总分"] += item['change']
+                            st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | [审核通过] {item['group']} {item['dimension']} {item['change']:+d} | 原因: {item['reason']}")
+                            st.session_state.approvals.pop(i)
+                            st.rerun()
+                            
+                        if c2.button("❌ 驳回", key=f"rej_{i}"):
+                            st.session_state.approvals.pop(i)
+                            st.rerun()
+                        st.divider()
+            else:
+                st.success("✨ 所有申请已处理完毕")
+            
+            st.divider()
+
+            st.subheader("快捷评分")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("⏱️ 迟到扣分", use_container_width=True):
+                    batch_quick_score_dialog("迟到扣分", "自强不息(准时)", -5, "迟到人数", "迟到")
+                if st.button("🤝 互助加分", use_container_width=True):
+                    batch_quick_score_dialog("互助加分", "厚德载物(互助)", 5, "表扬人次", "课后整洁/助人")
+            with col2:
+                if st.button("📵 违纪扣分", use_container_width=True):
+                    single_quick_score_dialog("行胜于言(专注)", -10, "违纪次数", "课堂违纪")
+                if st.button("🏃 活力加分", use_container_width=True):
+                    batch_quick_score_dialog("活力加分", "无体育不清华(活力)", 5, "积极人次", "晨跑/课间操")
+                    
+            st.divider()
+            st.subheader("小组管理")
+            with st.expander("📝 修改小组名称"):
+                old_name = st.selectbox("选择要修改的小组", st.session_state.data["小组"].tolist())
+                new_name = st.text_input("输入新名称")
+                
+                if st.button("确认改名"):
+                    if not new_name.strip():
+                        st.error("名称不能为空")
+                    elif new_name in st.session_state.data["小组"].values:
+                        st.error("该小组名称已存在！")
+                    else:
+                        idx = st.session_state.data[st.session_state.data["小组"] == old_name].index[0]
+                        st.session_state.data.at[idx, "小组"] = new_name
+                        st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | 系统消息: {old_name} 更名为 {new_name}")
+                        st.success("改名成功！")
+                        st.rerun()
+        else: 
+            st.info("请输入密码解锁管理权限") 
+            
+    else: # 小组组长
+        st.subheader("组长工作台")
+        selected_group = st.selectbox("选择你的小组", st.session_state.data["小组"])
+        gp_pw = st.text_input("小组密码", type="password", help="默认密码为 123")
+        
+        if gp_pw == GROUP_PASSWORDS.get(selected_group, ""):
+            st.success(f"✅ 已登录: {selected_group}")
+            
+            # Show current score
+            group_data = st.session_state.data[st.session_state.data["小组"] == selected_group].iloc[0]
+            st.metric("当前总分", f"{int(group_data['总分'])} 分")
+            
+            st.markdown("### 提交申请")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("⏱️ 登记迟到", use_container_width=True):
+                    leader_quick_submit_dialog(selected_group, "自强不息(准时)", -5, "迟到人数", "组员迟到")
+                if st.button("🏃 登记活力", use_container_width=True):
+                    leader_quick_submit_dialog(selected_group, "无体育不清华(活力)", 5, "积极人次", "晨跑/课间操")
+            with c2:
+                if st.button("🤝 登记互助", use_container_width=True):
+                    leader_quick_submit_dialog(selected_group, "厚德载物(互助)", 5, "表扬人次", "课后整洁/助人")
+                
+            st.info("💡 提交后需等待管理员审核生效")
+        elif gp_pw:
+            st.error("❌ 密码错误")
+
+# --- 主界面 --- 
+st.title("💜 清华企业家班：8天能量重塑看板") 
+st.subheader("“自强不息，厚德载物” —— 班级纪律实时统计") 
+
+# 1. 清华马拉松进度条 (Progress Bars) 
+st.markdown("### 🏃 清华园马拉松进度 (目标: 500分)") 
+
+# 使用 st.columns(2) 创建两列布局，在移动端会自动堆叠
+for i, row in st.session_state.data.iterrows():
+    # 每两行数据分一组
+    if i % 2 == 0:
+        cols = st.columns(2)
+    
+    col_idx = i % 2
+    with cols[col_idx]:
+        st.markdown(f"**{row['小组']}**")
+        progress = min(row['总分'] / 500, 1.0) # 假设500分为终点 
+        st.progress(progress)
+        st.caption(f"当前积分: {int(row['总分'])} 分")
+
+st.divider() 
+
+# 2. 核心图表区 
+tab1, tab2 = st.tabs(["🕸️ 能量雷达", "🏆 积分排行"])
+
+with tab1:
+    # 转换数据为长表以适配 Plotly 
+    df_melt = st.session_state.data.melt(id_vars="小组", value_vars=["自强不息(准时)", "行胜于言(专注)", "厚德载物(互助)", "无体育不清华(活力)"]) 
+    fig = px.line_polar(df_melt, r="value", theta="variable", color="小组", line_close=True, 
+                        color_discrete_sequence=px.colors.qualitative.Prism) 
+    fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100]))) 
+    st.plotly_chart(fig, use_container_width=True) 
+    
+with tab2:
+    rank_df = st.session_state.data[["小组", "总分"]].sort_values(by="总分", ascending=False) 
+    fig_rank = px.bar(rank_df, x="总分", y="小组", orientation='h', 
+                      color="总分", color_continuous_scale="Purples") 
+    fig_rank.update_layout(showlegend=False) 
+    st.plotly_chart(fig_rank, use_container_width=True) 
+
+# 3. 黑榜 (挂科预警) 与 大事记 
+st.divider() 
+
+with st.expander("⚠️ 挂科预警 (黑榜)", expanded=True):
+    low_performers = st.session_state.data[st.session_state.data["总分"] < 80]["小组"].tolist() 
+    if low_performers: 
+        for group in low_performers: 
+            st.error(f"🚨 {group}：学分亮红灯，请及时充能！") 
+    else: 
+        st.success("🎉 暂无小组挂科，全员优异！") 
+
+with st.expander("📜 班级能量日志", expanded=False):
+    for log in st.session_state.logs[:10]: # 显示最近10条
+        st.text(log)
