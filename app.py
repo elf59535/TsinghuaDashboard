@@ -93,9 +93,11 @@ def load_data():
 
 def save_all_data(reason="Update data"):
     """Save all session state data to GitHub"""
-    with st.spinner("正在同步数据到云端，请稍候..."):
+    status = st.status("正在同步数据到云端...", expanded=True)
+    try:
         repo = get_github_repo()
         if not repo:
+            status.update(label="GitHub 连接失败", state="error")
             return False
 
         # Prepare DB object
@@ -109,16 +111,22 @@ def save_all_data(reason="Update data"):
         json_content = json.dumps(db_data, ensure_ascii=False, indent=2)
         
         # Read SHA first (to allow update)
+        status.write("正在读取远程数据...")
         _, sha = read_file_from_github(repo, REPO_DB_PATH)
         
         # Write Single File
+        status.write("正在写入新数据...")
         success = write_file_to_github(repo, REPO_DB_PATH, json_content, f"Update: {reason}", sha)
         
         if not success:
-            st.error("保存失败，请重试！")
+            status.update(label="保存失败", state="error")
             return False
             
+        status.update(label="✅ 同步成功！", state="complete", expanded=False)
         return True
+    except Exception as e:
+        status.update(label=f"发生错误: {str(e)}", state="error")
+        return False
 
 # --- 页面配置 --- 
 st.set_page_config(page_title="清华企业家班纪律看板", layout="wide") 
