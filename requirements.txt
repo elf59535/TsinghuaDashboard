@@ -2,5 +2,4 @@ streamlit
 pandas
 plotly
 qrcode[pil]
-sqlalchemy
-psycopg2-binary
+PyGithub
