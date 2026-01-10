@@ -193,6 +193,8 @@ def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
     
     if st.button("确认提交", key=f"btn_{title}"):
         count_updates = 0
+        updates_info = [] # Store logs to add later
+        
         for _, row in edited_df.iterrows():
             count = row[label]
             if count > 0:
@@ -200,16 +202,22 @@ def batch_quick_score_dialog(title, dimension, unit, label, default_reason):
                 reason = row["备注"]
                 change = count * unit
                 
-                # Update
+                # Update Session State Data
                 idx = st.session_state.data[st.session_state.data["小组"] == group].index[0]
                 st.session_state.data.loc[idx, dimension] += change
                 st.session_state.data.loc[idx, "总分"] += change
+                
+                # Prepare Log
                 log_msg = f"{datetime.now().strftime('%H:%M')} | {group} {dimension} {change:+d} | 原因: {reason} ({label}: {count})"
-                st.session_state.logs.insert(0, log_msg)
+                updates_info.append(log_msg)
                 count_updates += 1
         
         if count_updates > 0:
-            # Single DB Sync after all updates
+            # Batch Insert Logs
+            for msg in reversed(updates_info): # Insert in reverse to keep order
+                st.session_state.logs.insert(0, msg)
+                
+            # Single DB Sync
             save_all_data(f"Batch update: {title}")
             st.success(f"成功更新 {count_updates} 个小组的分数！")
             st.rerun()
