@@ -3,6 +3,9 @@ import streamlit as st
 import pandas as pd 
 import plotly.express as px 
 import plotly.graph_objects as go 
+import qrcode
+from PIL import Image
+from io import BytesIO
 from datetime import datetime 
 
 # Set headless mode to avoid warning
@@ -197,6 +200,28 @@ with st.sidebar:
                         st.session_state.logs.insert(0, f"{datetime.now().strftime('%H:%M')} | 系统消息: {old_name} 更名为 {new_name}")
                         st.success("改名成功！")
                         st.rerun()
+            
+            st.divider()
+            with st.expander("📲 生成分享二维码"):
+                qr_url = st.text_input("输入部署后的网址", placeholder="https://tsinghuadashboard.streamlit.app")
+                if qr_url:
+                    qr = qrcode.QRCode(version=1, box_size=10, border=5)
+                    qr.add_data(qr_url)
+                    qr.make(fit=True)
+                    img = qr.make_image(fill_color="black", back_color="white")
+                    
+                    # Convert to bytes
+                    buf = BytesIO()
+                    img.save(buf, format="PNG")
+                    byte_im = buf.getvalue()
+                    
+                    st.image(byte_im, caption="扫码访问看板", width=200)
+                    st.download_button(
+                        label="⬇️ 下载二维码",
+                        data=byte_im,
+                        file_name="dashboard_qr.png",
+                        mime="image/png"
+                    )
         else: 
             st.info("请输入密码解锁管理权限") 
             
